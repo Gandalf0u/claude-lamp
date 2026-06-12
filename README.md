@@ -17,11 +17,42 @@ Control your [Moonside](https://moonside.design) LED lamp via BLE based on Claud
 
 ## Requirements
 
-- macOS (BLE via CoreBluetooth)
+- macOS or Windows (BLE via CoreBluetooth / WinRT)
 - Python 3.10+
 - [bleak](https://github.com/hbldh/bleak) (`pip install bleak`)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - A Moonside lamp (tested with Halo — should work with One, Aurora, Lighthouse etc.)
+
+## Windows
+
+`moonside_hook.py` is a cross-platform Python replacement for `moonside_hook.sh`. On Windows, use it together with `settings_windows.json` instead of the `.sh` / `settings.json` pair.
+
+### Windows setup
+
+#### 1. Install bleak
+
+```powershell
+pip install bleak
+```
+
+#### 2. Copy scripts
+
+```powershell
+mkdir "$env:USERPROFILE\.claude\moonside_hooks" -Force
+Copy-Item claude_hooks\moonside_hook.py, claude_hooks\moonside_daemon.py "$env:USERPROFILE\.claude\moonside_hooks\"
+```
+
+No `chmod` needed on Windows.
+
+#### 3. Install the hooks
+
+Merge `claude_hooks/settings_windows.json` into `%USERPROFILE%\.claude\settings.json`. Replace `$CLAUDE_PROJECT_DIR/claude_hooks` with the path you copied the scripts to (e.g. `%USERPROFILE%\.claude\moonside_hooks`).
+
+#### 4. Restart Claude Code
+
+Open a new Claude Code session. The daemon will auto-discover your lamp by name.
+
+> **Logs, PID and state files** are stored in `%TEMP%` (i.e. `C:\Users\<you>\AppData\Local\Temp\`) instead of `/tmp/` on macOS/Linux.
 
 ## Setup
 
@@ -64,7 +95,7 @@ Open a new Claude Code session. The daemon auto-discovers your lamp by name — 
 
 ```
 Claude Code hook event
-  → moonside_hook.sh (writes state to /tmp/moonside_state, launches daemon if needed)
+  → moonside_hook.sh / moonside_hook.py (writes state to temp dir, launches daemon if needed)
     → moonside_daemon.py (persistent BLE connection, reads state file every 200ms)
       → Moonside lamp via BLE (Nordic UART Service)
 ```
@@ -75,16 +106,18 @@ The daemon keeps a persistent BLE connection to avoid 2-5s reconnect latency on 
 
 | File | Purpose |
 |---|---|
-| `claude_hooks/moonside_hook.sh` | Shell hook called by Claude Code. Writes state, starts daemon if needed. Always exits 0. |
+| `claude_hooks/moonside_hook.sh` | Shell hook (macOS/Linux). Writes state, starts daemon if needed. Always exits 0. |
+| `claude_hooks/moonside_hook.py` | Python hook (cross-platform, Windows). Same behaviour as the `.sh`. |
 | `claude_hooks/moonside_daemon.py` | Background daemon with persistent BLE connection, state machine, and idle→working debounce. |
-| `claude_hooks/settings.json` | Ready-to-use Claude Code hooks config. Copy/merge into `~/.claude/settings.json`. |
+| `claude_hooks/settings.json` | Ready-to-use Claude Code hooks config for macOS/Linux. |
+| `claude_hooks/settings_windows.json` | Ready-to-use Claude Code hooks config for Windows (uses `python` + `.py`). |
 | `moonside_ble.py` | Standalone BLE controller for Moonside lamps. Usable directly from the command line. |
 
 ### Daemon lifecycle
 
-- **PID file:** `/tmp/moonside_daemon.pid`
-- **State file:** `/tmp/moonside_state`
-- **Log file:** `/tmp/moonside_daemon.log`
+- **PID file:** `<tempdir>/moonside_daemon.pid` (e.g. `/tmp/` on macOS/Linux, `%TEMP%` on Windows)
+- **State file:** `<tempdir>/moonside_state`
+- **Log file:** `<tempdir>/moonside_daemon.log`
 
 ## Standalone BLE controller
 
@@ -106,8 +139,11 @@ python3 moonside_ble.py interactive               # REPL mode
 
 **Lamp not responding:**
 ```sh
-# Check daemon log
+# Check daemon log (macOS/Linux)
 cat /tmp/moonside_daemon.log
+
+# Windows (PowerShell)
+Get-Content "$env:TEMP\moonside_daemon.log"
 
 # Verify BLE connection works
 python3 moonside_ble.py on
@@ -115,8 +151,14 @@ python3 moonside_ble.py on
 
 **Daemon stuck:**
 ```sh
+# macOS/Linux
 kill "$(cat /tmp/moonside_daemon.pid)"
 rm -f /tmp/moonside_daemon.pid /tmp/moonside_state
+```
+```powershell
+# Windows
+Stop-Process -Id (Get-Content "$env:TEMP\moonside_daemon.pid")
+Remove-Item "$env:TEMP\moonside_daemon.pid", "$env:TEMP\moonside_state"
 ```
 
 **bleak not found:**

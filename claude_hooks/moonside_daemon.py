@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 """
 Moonside LED daemon — maintains persistent BLE connection and responds
-to state changes written to /tmp/moonside_state by moonside_hook.sh.
+to state changes written by moonside_hook.sh / moonside_hook.py.
 
 States: working, idle, input, off
 """
 
 import asyncio
-import fcntl
 import logging
 import os
 import signal
 import sys
+import tempfile
 import time
+
+if sys.platform != "win32":
+    import fcntl
 
 from bleak import BleakClient, BleakScanner
 
-LOCK_FILE = "/tmp/moonside_daemon.lock"
+_TMP = tempfile.gettempdir()
+LOCK_FILE = os.path.join(_TMP, "moonside_daemon.lock")
 
 NUS_TX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 NAME_PREFIX = "MOONSIDE"
@@ -27,9 +31,9 @@ def build_color_cmd(r: int, g: int, b: int) -> str:
 
 
 
-PID_FILE = "/tmp/moonside_daemon.pid"
-STATE_FILE = "/tmp/moonside_state"
-LOG_FILE = "/tmp/moonside_daemon.log"
+PID_FILE = os.path.join(_TMP, "moonside_daemon.pid")
+STATE_FILE = os.path.join(_TMP, "moonside_state")
+LOG_FILE = os.path.join(_TMP, "moonside_daemon.log")
 
 IDLE_TIMEOUT = 30 * 60  # 30 minutes
 
@@ -101,14 +105,33 @@ def cleanup():
         pass
 
 
+def acquire_lock() -> None:
+    """Ensure only one daemon runs at a time."""
+    if sys.platform == "win32":
+        # Simple PID-based lock for Windows (no fcntl)
+        if os.path.exists(PID_FILE):
+            try:
+                with open(PID_FILE) as f:
+                    pid = int(f.read().strip())
+                os.kill(pid, 0)
+                log.info("Another daemon already running, exiting")
+                sys.exit(0)
+            except (OSError, ValueError):
+                pass  # Stale PID — continue
+    else:
+        # The file handle must stay open for the duration of the process so
+        # that fcntl.flock holds the exclusive lock until the daemon exits.
+        lock_fp = open(LOCK_FILE, "w")  # noqa: SIM115
+        try:
+            fcntl.flock(lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            lock_fp.close()
+            log.info("Another daemon already running, exiting")
+            sys.exit(0)
+
+
 async def main():
-    # Ensure only one daemon runs at a time
-    lock_fp = open(LOCK_FILE, "w")
-    try:
-        fcntl.flock(lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        log.info("Another daemon already running, exiting")
-        sys.exit(0)
+    acquire_lock()
 
     device = await discover_moonside()
 
@@ -121,7 +144,8 @@ async def main():
     def handle_sigterm(*_):
         shutdown.set()
 
-    signal.signal(signal.SIGTERM, handle_sigterm)
+    if sys.platform != "win32":
+        signal.signal(signal.SIGTERM, handle_sigterm)
     signal.signal(signal.SIGINT, handle_sigterm)
 
     client, device = await connect_with_retry(device)
